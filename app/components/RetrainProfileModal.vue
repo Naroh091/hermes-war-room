@@ -31,6 +31,7 @@ interface AgentsResponse {
 interface ProfileConfigSlice {
   model: string | null
   provider: string | null
+  base_url: string | null
   allowlist: string[]
   name: string | null
 }
@@ -45,7 +46,7 @@ interface ModelOption {
 
 interface ModelCatalogResponse {
   updatedAt: string | null
-  providers: { id: string, label: string, count: number }[]
+  providers: ProviderOption[]
   models: ModelOption[]
 }
 
@@ -58,7 +59,19 @@ interface ModelMenuItem {
   free: boolean
 }
 
-interface ProviderOption { id: string, label: string, count: number }
+interface ProviderEndpoint {
+  region: string
+  openai_base_url: string
+  anthropic_base_url: string
+  docs_root: string
+}
+
+interface ProviderOption {
+  id: string
+  label: string
+  count: number
+  endpoints: ProviderEndpoint[]
+}
 
 const props = defineProps<{
   open: boolean
@@ -99,6 +112,8 @@ const model = ref('')
 const initialModel = ref('')
 const provider = ref('')
 const initialProvider = ref('')
+const baseUrl = ref('')
+const initialBaseUrl = ref('')
 const allowlist = ref<string[]>([])
 const initialAllowlist = ref<string[]>([])
 const loading = ref(false)
@@ -117,6 +132,25 @@ const providerMenuItems = computed(() => {
   const current = provider.value
   if (current && !items.some(i => i.value === current)) {
     items.unshift({ label: current, value: current, count: 0 })
+  }
+  return items
+})
+
+const endpointMenuItems = computed(() => {
+  const selectedProvider = providerCatalog.value.find(item => item.id === provider.value)
+  const items = (selectedProvider?.endpoints ?? []).flatMap(endpoint => [
+    {
+      label: endpoint.region + ' / OpenAI-compatible',
+      value: endpoint.openai_base_url
+    },
+    {
+      label: endpoint.region + ' / Anthropic-compatible',
+      value: endpoint.anthropic_base_url
+    }
+  ])
+  const current = baseUrl.value
+  if (current && !items.some(item => item.value === current)) {
+    items.unshift({ label: current, value: current })
   }
   return items
 })
@@ -214,7 +248,7 @@ async function loadAll(slug: string) {
       }),
       $fetch<ProfileConfigSlice>(`/api/profiles/${slug}/config`).catch((e) => {
         toast.add({ title: t('profileConfig.loadFailed'), description: (e as Error).message, color: 'error' })
-        return { model: null, provider: null, allowlist: [] as string[], name: null }
+        return { model: null, provider: null, base_url: null, allowlist: [] as string[], name: null }
       })
     ])
     skills.value = skillList
@@ -231,11 +265,13 @@ async function loadAll(slug: string) {
     initialModel.value = model.value
     provider.value = configData.provider ?? ''
     initialProvider.value = provider.value
+    baseUrl.value = configData.base_url ?? ''
+    initialBaseUrl.value = baseUrl.value
     /* If the profile has neither a model nor a provider, it's currently
        inheriting from the global config — start the toggle ON. Otherwise
        it has explicit overrides; default to OFF so the dropdowns are
        visible and the user can edit. */
-    inheritGlobal.value = !configData.model && !configData.provider
+    inheritGlobal.value = !configData.model && !configData.provider && !configData.base_url
     allowlist.value = [...configData.allowlist]
     initialAllowlist.value = [...configData.allowlist]
   } finally {
@@ -268,6 +304,8 @@ watch(() => [props.open, props.profile?.slug], ([open, profileSlug]) => {
     initialModel.value = ''
     provider.value = ''
     initialProvider.value = ''
+    baseUrl.value = ''
+    initialBaseUrl.value = ''
     allowlist.value = []
     initialAllowlist.value = []
     confirmFire.value = false
@@ -346,19 +384,22 @@ async function submit() {
        so we have to mirror the values explicitly. */
     const effectiveModel = inheritGlobal.value ? null : (model.value.trim() || null)
     const effectiveProvider = inheritGlobal.value ? null : (provider.value.trim() || null)
+    const effectiveBaseUrl = inheritGlobal.value ? null : (baseUrl.value.trim() || null)
     const modelChanged = !inheritGlobal.value && effectiveModel !== (initialModel.value || null)
     const providerChanged = !inheritGlobal.value && effectiveProvider !== (initialProvider.value || null)
+    const baseUrlChanged = !inheritGlobal.value && effectiveBaseUrl !== (initialBaseUrl.value || null)
     const allowlistChanged = JSON.stringify(allowlist.value) !== JSON.stringify(initialAllowlist.value)
     /* Always send inherit when the toggle is ON, even if it was on initially —
        cheap idempotent overwrite that re-syncs the profile to current global
        (covers the case where the user changed global between saves). */
-    if (inheritGlobal.value || modelChanged || providerChanged || allowlistChanged) {
+    if (inheritGlobal.value || modelChanged || providerChanged || baseUrlChanged || allowlistChanged) {
       const body: Record<string, unknown> = {}
       if (inheritGlobal.value) {
         body.inheritGlobalModel = true
       } else {
         if (modelChanged) body.model = effectiveModel
         if (providerChanged) body.provider = effectiveProvider
+        if (baseUrlChanged) body.base_url = effectiveBaseUrl
       }
       if (allowlistChanged) body.allowlist = allowlist.value
       writes.push($fetch(`/api/profiles/${workingSlug}/config`, {
@@ -545,8 +586,8 @@ const agentsHint = computed(() => {
                 />
               </UFormField>
 
-              <!-- Inherit-from-global toggle. When ON, hides provider+model
-                   dropdowns and clears the override on save. Default ON when
+              <!-- Inherit-from-global toggle. When ON, hides provider, model and
+                   endpoint controls, then clears the override on save. Default ON when
                    the profile already has no override. -->
               <label class="inherit-toggle">
                 <USwitch
@@ -609,6 +650,24 @@ const agentsHint = computed(() => {
                   </USelectMenu>
                 </UFormField>
               </div>
+
+              <UFormField
+                v-if="!inheritGlobal"
+                :label="t('profileConfig.baseUrl')"
+                :help="t('profileConfig.baseUrlHint')"
+              >
+                <USelectMenu
+                  v-model="baseUrl"
+                  :items="endpointMenuItems"
+                  value-key="value"
+                  :placeholder="t('profileConfig.baseUrlPlaceholder')"
+                  :search-input="{ placeholder: t('profileConfig.baseUrlSearch') }"
+                  create-item="always"
+                  :disabled="loading"
+                  class="w-full"
+                  :ui="{ base: 'font-mono text-xs', item: 'gap-2', itemLabel: 'font-mono text-xs' }"
+                />
+              </UFormField>
 
               <CapabilityCard
                 :label="t('tools.title')"

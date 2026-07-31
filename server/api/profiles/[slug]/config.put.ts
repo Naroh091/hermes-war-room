@@ -5,6 +5,7 @@ import { restart as restartAcp } from '../../../utils/orchestrator-acp'
 interface PutBody {
   model?: string | null
   provider?: string | null
+  base_url?: string | null
   allowlist?: unknown
   name?: string | null
   /** When true, copy the global `model:` block into the profile config so
@@ -33,6 +34,9 @@ export default defineEventHandler(async (event) => {
     }
     if ('provider' in body) {
       if (body.provider === null || typeof body.provider === 'string') patch.provider = body.provider
+    }
+    if ('base_url' in body) {
+      if (body.base_url === null || typeof body.base_url === 'string') patch.base_url = body.base_url
     }
   }
   if ('allowlist' in body) {

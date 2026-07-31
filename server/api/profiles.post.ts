@@ -19,6 +19,7 @@ interface PostBody {
   preset?: string | null
   model?: string | null
   provider?: string | null
+  base_url?: string | null
   /** When true, copy the global model block into the new profile. Sent by
    *  the Hire modal's "Heredar global" toggle when ON. */
   inheritGlobalModel?: boolean
@@ -127,6 +128,7 @@ export default defineEventHandler(async (event) => {
   const configPatch: {
     model?: string | null
     provider?: string | null
+    base_url?: string | null
     inheritGlobalModel?: boolean
   } = {}
   if (body.inheritGlobalModel === true) {
@@ -134,6 +136,7 @@ export default defineEventHandler(async (event) => {
   } else {
     if ('model' in body) configPatch.model = body.model?.trim() || null
     if ('provider' in body) configPatch.provider = body.provider?.trim() || null
+    if ('base_url' in body) configPatch.base_url = body.base_url?.trim() || null
   }
   if (Object.keys(configPatch).length > 0) {
     try {

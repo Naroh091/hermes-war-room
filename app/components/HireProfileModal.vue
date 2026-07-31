@@ -33,7 +33,18 @@ interface ModelOption {
   recommended: boolean
   free: boolean
 }
-interface ProviderOption { id: string, label: string, count: number }
+interface ProviderEndpoint {
+  region: string
+  openai_base_url: string
+  anthropic_base_url: string
+  docs_root: string
+}
+interface ProviderOption {
+  id: string
+  label: string
+  count: number
+  endpoints: ProviderEndpoint[]
+}
 interface ModelCatalogResponse {
   updatedAt: string | null
   providers: ProviderOption[]
@@ -86,6 +97,7 @@ const agentsTouched = ref(false)
 
 const model = ref<string | undefined>(undefined)
 const provider = ref<string | undefined>(undefined)
+const baseUrl = ref<string | undefined>(undefined)
 /* "Inherit from global" — same flag we use in Retrain. Default ON for new
    hires (most common case: don't override the global model/provider). User
    toggles OFF when they want this profile to talk to a different model. */
@@ -150,6 +162,25 @@ const providerMenuItems = computed(() => {
   const current = provider.value
   if (current && !items.some(i => i.value === current)) {
     items.unshift({ label: current, value: current, count: 0 })
+  }
+  return items
+})
+
+const endpointMenuItems = computed(() => {
+  const selectedProvider = providerCatalog.value.find(item => item.id === provider.value)
+  const items = (selectedProvider?.endpoints ?? []).flatMap(endpoint => [
+    {
+      label: endpoint.region + ' / OpenAI-compatible',
+      value: endpoint.openai_base_url
+    },
+    {
+      label: endpoint.region + ' / Anthropic-compatible',
+      value: endpoint.anthropic_base_url
+    }
+  ])
+  const current = baseUrl.value
+  if (current && !items.some(item => item.value === current)) {
+    items.unshift({ label: current, value: current })
   }
   return items
 })
@@ -279,6 +310,7 @@ watch(() => props.open, (v) => {
     agentsTouched.value = false
     model.value = undefined
     provider.value = undefined
+    baseUrl.value = undefined
     inheritGlobal.value = true
     selectedPresetId.value = 'custom'
     if (presets.value.length === 0) loadPresets()
@@ -342,7 +374,8 @@ async function submit() {
            the values rather than rely on inheritance. */
         inheritGlobalModel: inheritGlobal.value,
         model: inheritGlobal.value ? null : (model.value || null),
-        provider: inheritGlobal.value ? null : (provider.value || null)
+        provider: inheritGlobal.value ? null : (provider.value || null),
+        base_url: inheritGlobal.value ? null : (baseUrl.value?.trim() || null)
       }
     })
     toast.add({
@@ -531,7 +564,7 @@ async function submit() {
               </div>
 
               <!-- Inherit-from-global toggle. When ON, the profile's
-                   config.yaml stays without a model:/provider: override and
+                   config.yaml stays without a model/provider/endpoint override and
                    Hermes resolves both from `~/.hermes/config.yaml` (which
                    keeps `provider: custom` glued to its base_url + api_key).
                    Default ON for new hires; flip OFF to override. -->
@@ -587,6 +620,23 @@ async function submit() {
                   </USelectMenu>
                 </UFormField>
               </div>
+
+              <UFormField
+                v-if="!inheritGlobal"
+                :label="t('profileConfig.baseUrl')"
+                :help="t('profileConfig.baseUrlHint')"
+              >
+                <USelectMenu
+                  v-model="baseUrl"
+                  :items="endpointMenuItems"
+                  value-key="value"
+                  :placeholder="t('profileConfig.baseUrlPlaceholder')"
+                  :search-input="{ placeholder: t('profileConfig.baseUrlSearch') }"
+                  create-item="always"
+                  class="w-full"
+                  :ui="{ base: 'font-mono text-xs', item: 'gap-2', itemLabel: 'font-mono text-xs' }"
+                />
+              </UFormField>
 
               <CapabilityCard
                 :label="t('tools.title')"
