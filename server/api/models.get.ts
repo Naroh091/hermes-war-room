@@ -2,6 +2,11 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { parse as parseYaml } from 'yaml'
+import {
+  BUILTIN_PROVIDER_CATALOG,
+  type ProviderEndpointDefinition,
+  type ProviderModelDefinition
+} from '../utils/provider-catalog'
 
 interface CatalogModel {
   id: string
@@ -23,11 +28,22 @@ interface ModelOption {
   description: string
   recommended: boolean
   free: boolean
+  context_window?: number
+  pricing_usd_per_million_tokens?: ProviderModelDefinition['pricing_usd_per_million_tokens']
+  input_modalities?: string[]
+  thinking?: string[]
+}
+
+interface ProviderOption {
+  id: string
+  label: string
+  count: number
+  endpoints: ProviderEndpointDefinition[]
 }
 
 interface ModelCatalogResponse {
   updatedAt: string | null
-  providers: { id: string, label: string, count: number }[]
+  providers: ProviderOption[]
   models: ModelOption[]
 }
 
@@ -68,17 +84,39 @@ function loadHermesConfig(): HermesConfig | null {
   }
 }
 
-/* Common providers users might want even when not in the dynamic catalog. */
 const FALLBACK_PROVIDERS: Record<string, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
-  custom: 'Custom (base_url)'
+  custom: 'Custom (base_url)',
+  minimax: 'MiniMax'
 }
 
-/* Pulls model ids out of a `providers.<name>.models` value. The Hermes config
-   schema accepts either a list of strings or a list of `{ id, ... }` objects,
-   plus the occasional plain object keyed by id. Be defensive — this is user
-   YAML and we should never crash the picker over a stray shape. */
+const BUILTIN_BY_ID = new Map(BUILTIN_PROVIDER_CATALOG.map(provider => [provider.id, provider]))
+
+function builtinEndpoints(providerId: string): ProviderEndpointDefinition[] {
+  return (BUILTIN_BY_ID.get(providerId)?.endpoints ?? []).map(endpoint => ({ ...endpoint }))
+}
+
+function mergeEndpoints(
+  current: ProviderEndpointDefinition[],
+  additional: ProviderEndpointDefinition[]
+): ProviderEndpointDefinition[] {
+  const seen = new Set<string>()
+  const merged: ProviderEndpointDefinition[] = []
+  for (const endpoint of [...current, ...additional]) {
+    const key = [
+      endpoint.region,
+      endpoint.openai_base_url,
+      endpoint.anthropic_base_url,
+      endpoint.docs_root
+    ].join('|')
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push({ ...endpoint })
+  }
+  return merged
+}
+
 function extractModelIds(raw: unknown): string[] {
   if (!raw) return []
   if (Array.isArray(raw)) {
@@ -96,60 +134,95 @@ function extractModelIds(raw: unknown): string[] {
 }
 
 function build(catalog: Catalog | null, config: HermesConfig | null): ModelCatalogResponse {
-  const providers: ModelCatalogResponse['providers'] = []
-  const seen = new Set<string>()
+  const providers: ProviderOption[] = []
   const models: ModelOption[] = []
-  const modelKey = (m: { id: string, provider: string }) => `${m.provider}::${m.id}`
+  const modelKey = (m: { id: string, provider: string }) => m.provider + '::' + m.id
   const modelKeys = new Set<string>()
+
+  const ensureProvider = (id: string, label?: string, endpoints = builtinEndpoints(id)) => {
+    const existing = providers.find(provider => provider.id === id)
+    if (existing) {
+      if (label && existing.label === id) existing.label = label
+      existing.endpoints = mergeEndpoints(existing.endpoints, endpoints)
+      return existing
+    }
+    const provider: ProviderOption = {
+      id,
+      label: label ?? FALLBACK_PROVIDERS[id] ?? id,
+      count: 0,
+      endpoints
+    }
+    providers.push(provider)
+    return provider
+  }
+
+  const addModel = (option: ModelOption, countProvider = true): boolean => {
+    const key = modelKey(option)
+    if (modelKeys.has(key)) return false
+    models.push(option)
+    modelKeys.add(key)
+    if (countProvider) {
+      const provider = providers.find(item => item.id === option.provider)
+      if (provider) provider.count += 1
+    }
+    return true
+  }
 
   for (const [pid, body] of Object.entries(catalog?.providers ?? {})) {
     const list = Array.isArray(body?.models) ? body.models : []
-    providers.push({
-      id: pid,
-      label: body?.metadata?.display_name ?? pid,
-      count: list.length
-    })
-    seen.add(pid)
+    const provider = ensureProvider(pid, body?.metadata?.display_name ?? pid)
+    provider.count += list.length
     for (const m of list) {
       if (!m?.id) continue
       const desc = (m.description ?? '').toLowerCase()
-      const opt: ModelOption = {
+      addModel({
         id: m.id,
         provider: pid,
         description: m.description ?? '',
         recommended: desc.includes('recommended'),
         free: desc.includes('free')
-      }
-      models.push(opt)
-      modelKeys.add(modelKey(opt))
+      }, false)
     }
   }
 
-  /* Local-config overrides — surface custom/self-hosted models the user has
-     declared in `~/.hermes/config.yaml` so they show up in the picker even
-     when the upstream catalog knows nothing about them. */
-  const configModels: ModelOption[] = []
-  const ensureProvider = (id: string, label?: string) => {
-    if (!seen.has(id)) {
-      providers.push({ id, label: label ?? FALLBACK_PROVIDERS[id] ?? id, count: 0 })
-      seen.add(id)
+  for (const builtin of BUILTIN_PROVIDER_CATALOG) {
+    const provider = ensureProvider(builtin.id, builtin.label, builtin.endpoints)
+    for (const model of builtin.models) {
+      const option: ModelOption = {
+        id: model.model_id,
+        provider: builtin.id,
+        description: model.model_id === builtin.model_id ? 'configured default' : 'built-in',
+        recommended: model.model_id === builtin.model_id,
+        free: false,
+        context_window: model.context_window,
+        pricing_usd_per_million_tokens: model.pricing_usd_per_million_tokens,
+        input_modalities: model.input_modalities,
+        thinking: model.thinking
+      }
+      if (!addModel(option)) {
+        const existing = models.find(item => modelKey(item) === modelKey(option))
+        if (existing) {
+          existing.context_window = option.context_window
+          existing.pricing_usd_per_million_tokens = option.pricing_usd_per_million_tokens
+          existing.input_modalities = option.input_modalities
+          existing.thinking = option.thinking
+          existing.recommended = option.recommended
+        }
+      }
     }
+    if (provider.count === 0) provider.count = builtin.models.length
   }
 
   if (config?.model?.default && config.model.provider) {
     const pid = config.model.provider
     ensureProvider(pid)
-    const opt: ModelOption = {
+    addModel({
       id: config.model.default,
       provider: pid,
       description: 'configured default',
       recommended: false,
       free: false
-    }
-    if (!modelKeys.has(modelKey(opt))) {
-      configModels.push(opt)
-      modelKeys.add(modelKey(opt))
-    }
+    })
   }
 
   for (const [pid, body] of Object.entries(config?.providers ?? {})) {
@@ -158,31 +231,18 @@ function build(catalog: Catalog | null, config: HermesConfig | null): ModelCatal
     const ids = extractModelIds(body.models)
     if (body.default && !ids.includes(body.default)) ids.unshift(body.default)
     for (const id of ids) {
-      const opt: ModelOption = {
+      addModel({
         id,
         provider: pid,
         description: 'configured',
         recommended: false,
         free: false
-      }
-      if (!modelKeys.has(modelKey(opt))) {
-        configModels.push(opt)
-        modelKeys.add(modelKey(opt))
-      }
+      })
     }
   }
-
-  /* Bump provider counts for everything we just injected from config. */
-  for (const m of configModels) {
-    const p = providers.find(p => p.id === m.provider)
-    if (p) p.count += 1
-  }
-  models.push(...configModels)
 
   for (const [pid, label] of Object.entries(FALLBACK_PROVIDERS)) {
-    if (!seen.has(pid)) {
-      providers.push({ id: pid, label, count: 0 })
-    }
+    ensureProvider(pid, label)
   }
 
   models.sort((a, b) => {
@@ -201,10 +261,6 @@ function build(catalog: Catalog | null, config: HermesConfig | null): ModelCatal
 export default defineEventHandler((): ModelCatalogResponse => {
   const catalogMtimeMs = existsSync(CATALOG_PATH) ? statSync(CATALOG_PATH).mtimeMs : 0
   const configMtimeMs = existsSync(CONFIG_PATH) ? statSync(CONFIG_PATH).mtimeMs : 0
-
-  if (!catalogMtimeMs && !configMtimeMs) {
-    return { updatedAt: null, providers: [], models: [] }
-  }
 
   if (cached && cached.catalogMtimeMs === catalogMtimeMs && cached.configMtimeMs === configMtimeMs) {
     return cached.payload

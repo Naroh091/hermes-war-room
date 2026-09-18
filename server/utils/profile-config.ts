@@ -18,21 +18,22 @@ const GLOBAL_CONFIG_PATH = join(HERMES_HOME, 'config.yaml')
  * supplying `base_url`, Hermes treats it as a partial override and falls
  * back to a different endpoint (typically OpenRouter, picked up from env).
  * The cleanest UX is "if you're not actually changing anything, don't write
- * an override". Profiles that genuinely need a different base_url have to
- * edit config.yaml manually for now (no UI yet).
+ * an override". Profiles can also carry an explicit base_url when they need a
+ * different provider endpoint.
  */
-function readGlobalModelConfig(): { model: string | null, provider: string | null } {
-  if (!existsSync(GLOBAL_CONFIG_PATH)) return { model: null, provider: null }
+function readGlobalModelConfig(): { model: string | null, provider: string | null, base_url: string | null } {
+  if (!existsSync(GLOBAL_CONFIG_PATH)) return { model: null, provider: null, base_url: null }
   try {
     const cfg = parseYaml(readFileSync(GLOBAL_CONFIG_PATH, 'utf8')) as {
-      model?: { default?: unknown, provider?: unknown }
+      model?: { default?: unknown, provider?: unknown, base_url?: unknown }
     } | null
     return {
       model: typeof cfg?.model?.default === 'string' ? cfg.model.default : null,
-      provider: typeof cfg?.model?.provider === 'string' ? cfg.model.provider : null
+      provider: typeof cfg?.model?.provider === 'string' ? cfg.model.provider : null,
+      base_url: typeof cfg?.model?.base_url === 'string' ? cfg.model.base_url : null
     }
   } catch {
-    return { model: null, provider: null }
+    return { model: null, provider: null, base_url: null }
   }
 }
 
@@ -77,6 +78,8 @@ export interface ProfileConfigSlice {
   model: string | null
   /** model.provider — the inference provider (anthropic, openai, custom, etc.). */
   provider: string | null
+  /** model.base_url — an optional profile-specific provider endpoint. */
+  base_url: string | null
   /** command_allowlist — list of dangerous-pattern descriptions pre-approved without prompting. */
   allowlist: string[]
   /** name — optional display name/callsign for the profile (used by war-room) */
@@ -89,32 +92,35 @@ function configPath(profileDir: string): string {
 
 export function readProfileConfig(profileDir: string): ProfileConfigSlice {
   const path = configPath(profileDir)
-  if (!existsSync(path)) return { model: null, provider: null, allowlist: [], name: null }
+  if (!existsSync(path)) return { model: null, provider: null, base_url: null, allowlist: [], name: null }
   try {
     const raw = readFileSync(path, 'utf8')
     const cfg = parseYaml(raw) as {
-      model?: { default?: unknown, provider?: unknown }
+      model?: { default?: unknown, provider?: unknown, base_url?: unknown }
       command_allowlist?: unknown
       name?: unknown
     } | null
     const modelDefault = cfg?.model?.default
     const provider = cfg?.model?.provider
+    const baseUrl = cfg?.model?.base_url
     const name = cfg?.name
     const list = Array.isArray(cfg?.command_allowlist) ? cfg.command_allowlist : []
     return {
       model: typeof modelDefault === 'string' ? modelDefault : null,
       provider: typeof provider === 'string' ? provider : null,
+      base_url: typeof baseUrl === 'string' ? baseUrl.trim() : null,
       name: typeof name === 'string' ? name.trim() : null,
       allowlist: list.filter((v): v is string => typeof v === 'string')
     }
   } catch {
-    return { model: null, provider: null, allowlist: [], name: null }
+    return { model: null, provider: null, base_url: null, allowlist: [], name: null }
   }
 }
 
 export interface ProfileConfigPatch {
   model?: string | null
   provider?: string | null
+  base_url?: string | null
   allowlist?: string[]
   name?: string | null
   /** When true, copy the global Hermes `model:` block (default, provider,
@@ -155,7 +161,7 @@ export function writeProfileConfig(profileDir: string, patch: ProfileConfigPatch
          override so we don't keep a stale value. */
       if (doc.has('model')) doc.delete('model')
     }
-  } else if ('model' in patch || 'provider' in patch) {
+  } else if ('model' in patch || 'provider' in patch || 'base_url' in patch) {
     /* If `model:` exists but is a scalar/sequence (malformed user config),
        refuse to silently overwrite. Otherwise rely on setIn/deleteIn —
        they create the intermediate map for fresh/empty documents and
@@ -173,9 +179,23 @@ export function writeProfileConfig(profileDir: string, patch: ProfileConfigPatch
     const globalModel = readGlobalModelConfig()
     const trim = (v: string | null | undefined) =>
       typeof v === 'string' ? v.trim() : v
+    const existingBaseUrl = doc.getIn(['model', 'base_url'])
+    let effectiveBaseUrl = typeof existingBaseUrl === 'string' ? existingBaseUrl.trim() : null
+    if ('base_url' in patch) {
+      const v = trim(patch.base_url)
+      const matchesGlobal = !!v && v === globalModel.base_url
+      if (!v || matchesGlobal) {
+        if (doc.hasIn(['model', 'base_url'])) doc.deleteIn(['model', 'base_url'])
+        effectiveBaseUrl = null
+      } else {
+        doc.setIn(['model', 'base_url'], v)
+        effectiveBaseUrl = v
+      }
+    }
+    const hasEndpointOverride = !!effectiveBaseUrl && effectiveBaseUrl !== globalModel.base_url
     if ('model' in patch) {
       const v = trim(patch.model)
-      const matchesGlobal = !!v && v === globalModel.model
+      const matchesGlobal = !!v && v === globalModel.model && !hasEndpointOverride
       if (!v || matchesGlobal) {
         if (doc.hasIn(['model', 'default'])) doc.deleteIn(['model', 'default'])
       } else {
@@ -184,7 +204,7 @@ export function writeProfileConfig(profileDir: string, patch: ProfileConfigPatch
     }
     if ('provider' in patch) {
       const v = trim(patch.provider)
-      const matchesGlobal = !!v && v === globalModel.provider
+      const matchesGlobal = !!v && v === globalModel.provider && !hasEndpointOverride
       if (!v || matchesGlobal) {
         if (doc.hasIn(['model', 'provider'])) doc.deleteIn(['model', 'provider'])
       } else {
