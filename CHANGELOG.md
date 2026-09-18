@@ -1,3 +1,9 @@
+## [1.6.0](https://github.com/Naroh091/hermes-war-room/compare/v1.5.0...v1.6.0) (2026-09-18)
+
+### Features
+
+* add MiniMax profile endpoint selection ([e6f31e3](https://github.com/Naroh091/hermes-war-room/commit/e6f31e31824a88b5864d703e0e7841d9620ff241))
+
 ## [1.5.0](https://github.com/Naroh091/hermes-war-room/compare/v1.4.1...v1.5.0) (2026-05-18)
 
 ### Features
