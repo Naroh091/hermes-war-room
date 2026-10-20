@@ -1,6 +1,8 @@
 export interface ProviderModelDefinition {
   model_id: string
   context_window: number
+  max_output_tokens?: number
+  pricing_note?: string
   pricing_usd_per_million_tokens: {
     input: number
     output: number
@@ -27,36 +29,40 @@ export interface ProviderCatalogEntry {
   endpoints: ProviderEndpointDefinition[]
 }
 
+// Direct API metadata: https://platform.minimax.io/docs/guides/models-intro
+// Pricing: https://platform.minimax.io/docs/guides/pricing-paygo
 export const BUILTIN_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
     id: 'minimax',
     label: 'MiniMax',
-    model_id: 'MiniMax-M3',
-    model_ids: ['MiniMax-M3', 'MiniMax-M2.7'],
+    model_id: 'MiniMax-M3.1-Flash',
+    model_ids: ['MiniMax-M3.1-Flash', 'MiniMax-M3'],
     models: [
+      {
+        model_id: 'MiniMax-M3.1-Flash',
+        context_window: 1000000,
+        max_output_tokens: 524288,
+        pricing_usd_per_million_tokens: {
+          input: 0.15,
+          output: 0.6,
+          cache_read: 0.015,
+          cache_write: null
+        },
+        input_modalities: ['text', 'image', 'video'],
+        thinking: ['adaptive']
+      },
       {
         model_id: 'MiniMax-M3',
         context_window: 1000000,
         pricing_usd_per_million_tokens: {
-          input: 0.6,
-          output: 2.4,
-          cache_read: 0.12,
-          cache_write: null
-        },
-        input_modalities: ['text', 'image', 'video'],
-        thinking: ['adaptive', 'disabled']
-      },
-      {
-        model_id: 'MiniMax-M2.7',
-        context_window: 204800,
-        pricing_usd_per_million_tokens: {
           input: 0.3,
           output: 1.2,
           cache_read: 0.06,
-          cache_write: 0.375
+          cache_write: null
         },
-        input_modalities: ['text'],
-        thinking: ['always_on']
+        pricing_note: 'Standard up to 512k input tokens; above 512k: input $0.60, output $2.40, cache read $0.12 per million tokens. Priority costs 1.5x standard.',
+        input_modalities: ['text', 'image', 'video'],
+        thinking: ['adaptive', 'disabled']
       }
     ],
     endpoints: [
