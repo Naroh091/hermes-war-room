@@ -8,6 +8,7 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
+    "test": "node --experimental-strip-types --test --test-concurrency=2 tests/*.test.mjs",
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {

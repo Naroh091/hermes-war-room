@@ -29,6 +29,8 @@ interface ModelOption {
   recommended: boolean
   free: boolean
   context_window?: number
+  max_output_tokens?: number
+  pricing_note?: string
   pricing_usd_per_million_tokens?: ProviderModelDefinition['pricing_usd_per_million_tokens']
   input_modalities?: string[]
   thinking?: string[]
@@ -170,18 +172,28 @@ function build(catalog: Catalog | null, config: HermesConfig | null): ModelCatal
 
   for (const [pid, body] of Object.entries(catalog?.providers ?? {})) {
     const list = Array.isArray(body?.models) ? body.models : []
-    const provider = ensureProvider(pid, body?.metadata?.display_name ?? pid)
-    provider.count += list.length
+    ensureProvider(pid, body?.metadata?.display_name ?? pid)
     for (const m of list) {
       if (!m?.id) continue
+      // Filter discovered text choices only. Explicit config is ingested below,
+      // and both profile editors separately retain the current/typed model ID.
+      const miniMaxText = pid !== 'custom' && /^(?:minimax\/)?(?:minimax-(?:m\d|text-)|abab)/i.test(m.id)
+      const currentIds = pid === 'openrouter'
+        ? ['minimax/minimax-m3.1-flash:free', 'minimax/minimax-m3']
+        : pid === 'opencode'
+          ? ['minimax-m3.1-flash-free', 'minimax-m3']
+          : pid === 'minimax'
+            ? ['MiniMax-M3.1-Flash', 'MiniMax-M3']
+            : ['MiniMax-M3', 'minimax-m3', 'minimax/minimax-m3']
+      if (miniMaxText && !currentIds.includes(m.id)) continue
       const desc = (m.description ?? '').toLowerCase()
       addModel({
         id: m.id,
         provider: pid,
         description: m.description ?? '',
-        recommended: desc.includes('recommended'),
+        recommended: miniMaxText ? /m3\.1-flash/i.test(m.id) : desc.includes('recommended'),
         free: desc.includes('free')
-      }, false)
+      })
     }
   }
 
@@ -195,6 +207,8 @@ function build(catalog: Catalog | null, config: HermesConfig | null): ModelCatal
         recommended: model.model_id === builtin.model_id,
         free: false,
         context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
+        pricing_note: model.pricing_note,
         pricing_usd_per_million_tokens: model.pricing_usd_per_million_tokens,
         input_modalities: model.input_modalities,
         thinking: model.thinking
@@ -203,6 +217,8 @@ function build(catalog: Catalog | null, config: HermesConfig | null): ModelCatal
         const existing = models.find(item => modelKey(item) === modelKey(option))
         if (existing) {
           existing.context_window = option.context_window
+          existing.max_output_tokens = option.max_output_tokens
+          existing.pricing_note = option.pricing_note
           existing.pricing_usd_per_million_tokens = option.pricing_usd_per_million_tokens
           existing.input_modalities = option.input_modalities
           existing.thinking = option.thinking
